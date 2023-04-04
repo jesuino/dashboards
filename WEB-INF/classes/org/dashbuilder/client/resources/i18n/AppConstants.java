@@ -50,7 +50,7 @@ public interface AppConstants extends Messages {
     String listDashboardsScreenTitle();
 
     String routerPerspective();
-    
+
     String dashboardAlreadyImport(String newModelId, String exitingModel);
 
     String importSuccess(String fileName);
@@ -62,7 +62,7 @@ public interface AppConstants extends Messages {
     String sessionTimeout();
 
     String invalidBusResponseProbablySessionTimeout();
-    
+
     String dashboardOpenTooltip();
 
     String defaultErrorMessage();
@@ -77,6 +77,14 @@ public interface AppConstants extends Messages {
 
     String emptyEditorMode();
 
+    String emptyClientMode();
+
+    String emptyWithImportId(String modelId);
+
     String errorContentTitle();
+
+    String samplesScreenTitle();
+
+    String emptyScreenTrySamples();
 
 }

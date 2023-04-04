@@ -27,16 +27,25 @@ import jsinterop.annotations.JsType;
 public interface RuntimeClientSetup {
 
     @JsProperty
+    boolean getAllowExternal();
+
+    @JsProperty
     String getMode();
 
     @JsProperty
     String getPath();
-    
+
     @JsProperty
     boolean getHideNavBar();
 
     @JsProperty
     String[] getDashboards();
+
+    @JsProperty
+    String getSamplesUrl();
+
+    @JsProperty
+    String getSamplesEditService();
 
     class Builder {
 

@@ -22,13 +22,14 @@ import javax.inject.Inject;
 
 import com.google.gwt.core.client.GWT;
 import elemental2.dom.DomGlobal;
+import elemental2.dom.URLSearchParams;
 import org.dashbuilder.client.RuntimeClientLoader;
 import org.dashbuilder.client.RuntimeCommunication;
-import org.dashbuilder.client.navbar.AppNavBar;
 import org.dashbuilder.client.perspective.ContentErrorPerspective;
 import org.dashbuilder.client.perspective.DashboardsListPerspective;
 import org.dashbuilder.client.perspective.EmptyPerspective;
 import org.dashbuilder.client.perspective.RuntimePerspective;
+import org.dashbuilder.client.perspective.SamplesPerspective;
 import org.dashbuilder.client.resources.i18n.AppConstants;
 import org.dashbuilder.shared.event.UpdatedRuntimeModelEvent;
 import org.dashbuilder.shared.model.DashbuilderRuntimeMode;
@@ -51,6 +52,8 @@ public class RouterScreen {
 
     public static final String ID = "RouterScreen";
 
+    public static final String SAMPLES_PARAM = "samples";
+
     private static AppConstants i18n = AppConstants.INSTANCE;
 
     public interface View extends UberElemental<RouterScreen> {
@@ -65,7 +68,10 @@ public class RouterScreen {
 
     @Inject
     DashboardsListScreen dashboardsListScreen;
-    
+
+    @Inject
+    SamplesScreen samplesScreen;
+
     @Inject
     ContentErrorScreen contentErrorScreen;
 
@@ -74,9 +80,6 @@ public class RouterScreen {
 
     @Inject
     PlaceManager placeManager;
-
-    @Inject
-    AppNavBar appNavBar;
 
     @Inject
     View view;
@@ -99,23 +102,23 @@ public class RouterScreen {
     }
 
     public void doRoute() {
+        var query = new URLSearchParams(DomGlobal.window.location.search);
+        // shortcut to samples screen
+        if (query.get(SAMPLES_PARAM) != null && clientLoader.hasSamples()) {
+            placeManager.goTo(SamplesPerspective.ID);
+            return;
+        }
         clientLoader.load(this::route,
                 (a, t) -> {
-                    appNavBar.setHide(true);
-                    placeManager.goTo(EmptyPerspective.ID);
+                    DomGlobal.console.log("Error loading models: " + a);
+                    DomGlobal.console.debug(t);
+                    goToNoModelsScreen();
                 });
     }
 
     protected void route(RuntimeServiceResponse response) {
         mode = response.getMode();
         var runtimeModelOp = response.getRuntimeModelOp();
-        if (mode == DashbuilderRuntimeMode.MULTIPLE_IMPORT) {
-            appNavBar.setHide(false);
-            appNavBar.setDashboardListEnabled(true);
-            appNavBar.setup();
-        } else {
-            appNavBar.setHide(true);
-        }
 
         if (runtimeModelOp.isPresent()) {
             var runtimeModel = runtimeModelOp.get();
@@ -123,15 +126,11 @@ public class RouterScreen {
             placeManager.goTo(RuntimePerspective.ID);
             runtimeScreen.loadDashboards(runtimeModel);
             runtimeScreen.goToIndex(layoutTemplates);
-            appNavBar.setHide(mode != DashbuilderRuntimeMode.MULTIPLE_IMPORT && layoutTemplates.size() == 1);
-            appNavBar.setDisplayMainMenu(layoutTemplates.size() > 1);
             return;
         }
 
-        appNavBar.setDisplayMainMenu(false);
-
         if (response.getAvailableModels().isEmpty()) {
-            placeManager.goTo(EmptyPerspective.ID);
+            goToNoModelsScreen();
             return;
         }
 
@@ -153,13 +152,10 @@ public class RouterScreen {
     }
 
     public void loadDashboard(String importId) {
-        String newUrl = GWT.getHostPageBaseURL() + "?" +
+        final var newUrl = GWT.getHostPageBaseURL() + "?" +
                 RuntimeClientLoader.IMPORT_ID_PARAM + "=" +
                 importId;
-        DomGlobal.window.history.replaceState(null,
-                "Dashbuilder Runtime |" + importId,
-                newUrl);
-        doRoute();
+        DomGlobal.window.location.href = newUrl;
     }
 
     public void listDashboards() {
@@ -168,7 +164,7 @@ public class RouterScreen {
                 GWT.getHostPageBaseURL());
         doRoute();
     }
-    
+
     public void goToContentError(Throwable contentException) {
         contentErrorScreen.showContentError(contentException.getMessage());
         placeManager.goTo(ContentErrorPerspective.ID);
@@ -183,4 +179,12 @@ public class RouterScreen {
         }
     }
 
+    void goToSamplesScreen() {
+        final var newUrl = GWT.getHostPageBaseURL() + "?" + SAMPLES_PARAM;
+        DomGlobal.window.location.href = newUrl;
+    }
+
+    private void goToNoModelsScreen() {
+        placeManager.goTo(EmptyPerspective.ID);
+    }
 }

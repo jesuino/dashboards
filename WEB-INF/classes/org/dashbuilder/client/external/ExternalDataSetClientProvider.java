@@ -35,6 +35,7 @@ import elemental2.promise.IThenable;
 import org.dashbuilder.client.external.transformer.JSONAtaInjector;
 import org.dashbuilder.client.external.transformer.JSONAtaTransformer;
 import org.dashbuilder.common.client.error.ClientRuntimeError;
+import org.dashbuilder.dataset.DataSet;
 import org.dashbuilder.dataset.DataSetFactory;
 import org.dashbuilder.dataset.DataSetLookup;
 import org.dashbuilder.dataset.client.ClientDataSetManager;
@@ -51,6 +52,9 @@ public class ExternalDataSetClientProvider {
 
     @Inject
     CSVParser csvParser;
+
+    @Inject
+    ExternalDataCallbackCoordinator dataSetCallbackCoordinator;
 
     ExternalDataSetJSONParser externalParser;
 
@@ -74,9 +78,46 @@ public class ExternalDataSetClientProvider {
         if (defOp.isPresent()) {
             var def = defOp.get();
             if (def.getContent() != null && def.getUrl() == null) {
-                register(lookup, listener, def.getContent(), SupportedMimeType.JSON);
+                register(def, new DataSetReadyCallback() {
+
+                    @Override
+                    public boolean onError(ClientRuntimeError error) {
+                        return listener.onError(error);
+                    }
+
+                    @Override
+                    public void notFound() {
+                        listener.notFound();
+
+                    }
+
+                    @Override
+                    public void callback(DataSet dataSet) {
+                        doLookup(lookup, listener);
+                    }
+                }, def.getContent(), SupportedMimeType.JSON);
+
             } else {
-                fetch(def, lookup, listener);
+                dataSetCallbackCoordinator.getCallback(def,
+                        new DataSetReadyCallback() {
+
+                            @Override
+                            public boolean onError(ClientRuntimeError error) {
+                                return listener.onError(error);
+                            }
+
+                            @Override
+                            public void notFound() {
+                                listener.notFound();
+                            }
+
+                            @Override
+                            public void callback(DataSet dataSet) {
+                                doLookup(lookup, listener);
+                            }
+                        },
+                        callback -> fetch(def, callback),
+                        () -> handleCache(def.getUUID()));
             }
         } else {
             listener.notFound();
@@ -105,7 +146,7 @@ public class ExternalDataSetClientProvider {
         externalDataSets.clear();
     }
 
-    private void fetch(ExternalDataSetDef def, DataSetLookup lookup, DataSetReadyCallback listener) {
+    private void fetch(ExternalDataSetDef def, DataSetReadyCallback callback) {
         var req = RequestInit.create();
         if (def.getHeaders() != null) {
             var headers = new Headers();
@@ -117,42 +158,52 @@ public class ExternalDataSetClientProvider {
             var contentType = response.headers.get(HttpHeaders.CONTENT_TYPE);
             var mimeType = SupportedMimeType.byMimeTypeOrUrl(contentType, def.getUrl())
                     .orElse(DEFAULT_TYPE);
-            response.text().then(responseText -> {
+            return response.text().then(responseText -> {
                 if (response.status == HttpResponseCodes.SC_OK) {
-                    return register(lookup,
-                            listener,
-                            responseText,
-                            mimeType);
+                    return register(def, callback, responseText, mimeType);
+                } else {
+                    var exception = buildExceptionForResponse(responseText, response);
+                    return notAbleToRetrieveDataSet(def, callback, exception);
                 }
-                return notAbleToRetrieveDataSet(def, listener);
 
-            }, error -> notAbleToRetrieveDataSet(def, listener));
-            return null;
-        }).catch_(e -> notAbleToRetrieveDataSet(def, listener));
+            }, error -> notAbleToRetrieveDataSet(def, callback));
+        }).catch_(e -> notAbleToRetrieveDataSet(def, callback,
+                new RuntimeException("Request not started, make sure that CORS is enabled.\nMessage: " + e)));
     }
 
-    private IThenable<Object> register(final DataSetLookup lookup,
-                                       final DataSetReadyCallback listener,
+    private Throwable buildExceptionForResponse(String responseText, Response response) {
+        var sb = new StringBuffer("The dataset URL is unreachable with status ");
+        sb.append(response.status);
+        sb.append(" - ");
+        sb.append(response.statusText);
+
+        if (responseText != null && !responseText.trim().isEmpty()) {
+            sb.append("\n");
+            sb.append("Response Text: ");
+            sb.append(responseText);
+        }
+        return new RuntimeException(sb.toString());
+    }
+
+    private IThenable<Object> register(ExternalDataSetDef def,
+                                       final DataSetReadyCallback callback,
                                        final String responseText,
                                        final SupportedMimeType contentType) {
-        var uuid = lookup.getDataSetUUID();
-        var def = externalDataSets.get(uuid);
         var content = contentType.tranformer.apply(responseText);
 
         if (def.getExpression() != null && !def.getExpression().trim().isEmpty()) {
             try {
                 content = applyExpression(def.getExpression(), content);
             } catch (Exception e) {
-                listener.onError(new ClientRuntimeError("Error evaluating dataset expression", e));
+                callback.onError(new ClientRuntimeError("Error evaluating dataset expression", e));
                 return null;
             }
         }
-
         var dataSet = DataSetFactory.newEmptyDataSet();
         try {
             dataSet = externalParser.parseDataSet(content);
         } catch (Exception e) {
-            listener.onError(new ClientRuntimeError("Error parsing dataset: " + e.getMessage(), e));
+            callback.onError(new ClientRuntimeError("Error parsing dataset: " + e.getMessage(), e));
             return null;
         }
 
@@ -165,27 +216,56 @@ public class ExternalDataSetClientProvider {
             }
         }
 
-        dataSet.setUUID(uuid);
-        clientDataSetManager.registerDataSet(dataSet);
-        var lookupResult = DataSetFactory.newEmptyDataSet();
-        try {
-            lookupResult = clientDataSetManager.lookupDataSet(lookup);
-        } catch (Exception e) {
-            listener.onError(new ClientRuntimeError("Error during dataset lookup: " + e.getMessage(), e));
-            return null;
+        var existingDs = clientDataSetManager.getDataSet(def.getUUID());
+        if (def.isAccumulate() && existingDs != null) {
+            // no new data, so keep existing data set
+            if (dataSet.getRowCount() == 0) {
+                dataSet = existingDs;
+            } else {
+                accumulateDataSet(dataSet, existingDs);
+            }
         }
-        handleCache(uuid);
-        listener.callback(lookupResult);
+        dataSet.setDefinition(def);
+        dataSet.setUUID(def.getUUID());
+        clientDataSetManager.registerDataSet(dataSet);
+        callback.callback(dataSet);
         return null;
+    }
+
+    void accumulateDataSet(DataSet dataSet, DataSet existingDs) {
+        if (dataSet.getRowCount() > 0 && !existingDs.getColumns().equals(dataSet.getColumns())) {
+            throw new RuntimeException("New data is not compatible with existing data.");
+        }
+        for (int i = dataSet.getRowCount(), j = 0; i < existingDs.getDefinition().getCacheMaxRows() && j < existingDs
+                .getRowCount(); i++, j++) {
+            final int row = j;
+            var values = existingDs.getColumns()
+                    .stream()
+                    .map(cl -> existingDs.getValueAt(row, cl.getId()))
+                    .toArray(Object[]::new);
+            dataSet.addValues(values);
+        }
+    }
+
+    private void doLookup(DataSetLookup lookup, DataSetReadyCallback listener) {
+        try {
+            var result = clientDataSetManager.lookupDataSet(lookup);
+            listener.callback(result);
+        } catch (Exception e) {
+            listener.onError(new ClientRuntimeError("Error during data set lookup", e));
+        }
     }
 
     private void handleCache(String uuid) {
         var def = externalDataSets.get(uuid);
+        if (def == null || def.isAccumulate()) {
+            return;
+        }
         scheduledTimeouts.computeIfPresent(uuid, (k, v) -> {
             DomGlobal.clearTimeout(v);
             return null;
         });
-        if (def != null && def.isCacheEnabled()) {
+        if (def.isCacheEnabled()) {
             var refreshTimeAmount = def.getRefreshTimeAmount();
             if (refreshTimeAmount != null) {
                 var id = DomGlobal.setTimeout(params -> {

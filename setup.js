@@ -10,6 +10,7 @@ dashbuilder = {
 	// Set this as true to always hide the nav bar
 	hideNavBar: true
 */
+	allowExternal: true,
 	path: "/dashboards",
 	dashboards: [ 
 		"https://raw.githubusercontent.com/jesuino/dashbuilder-yaml-samples/main/triton/Triton%20Inference%20Server%20Model%20Metrics.dash.yaml"
