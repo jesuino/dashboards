@@ -26,6 +26,7 @@ import javax.inject.Inject;
 import com.google.gwt.dev.util.HttpHeaders;
 import elemental2.core.Global;
 import elemental2.dom.DomGlobal;
+import elemental2.dom.FormData;
 import elemental2.dom.Headers;
 import elemental2.dom.RequestInit;
 import elemental2.dom.Response;
@@ -38,13 +39,16 @@ import org.dashbuilder.dataset.DataSet;
 import org.dashbuilder.dataset.DataSetLookup;
 import org.dashbuilder.dataset.client.ClientDataSetManager;
 import org.dashbuilder.dataset.client.DataSetReadyCallback;
+import org.dashbuilder.dataset.client.ExternalDataSetParserProvider;
 import org.dashbuilder.dataset.def.ExternalDataSetDef;
-import org.jboss.resteasy.util.HttpResponseCodes;
+import org.dashbuilder.dataset.def.HttpMethod;
 
 import static org.dashbuilder.common.client.StringUtils.isBlank;
 
 @ApplicationScoped
 public class ExternalDataSetClientProvider {
+
+    private static final int OK_RESPONSE_CODE = 200;
 
     @Inject
     ClientDataSetManager clientDataSetManager;
@@ -144,6 +148,11 @@ public class ExternalDataSetClientProvider {
             // relative URLs
             url = new URL(def.getUrl(), DomGlobal.location.href);
         }
+
+        if (!isBlank(def.getPath())) {
+            url = new URL(def.getPath(), url);
+        }
+
         if (def.getHeaders() != null) {
             var headers = new Headers();
             def.getHeaders().forEach(headers::append);
@@ -153,13 +162,21 @@ public class ExternalDataSetClientProvider {
         if (def.getQuery() != null) {
             def.getQuery().forEach(url.searchParams::set);
         }
+        if (def.getMethod() != null) {
+            req.setMethod(def.getMethod().name());
+        }
 
-        DomGlobal.fetch(url.toString(), req).then((Response response) -> {
+        if (def.getMethod() == HttpMethod.POST && def.getForm() != null && !def.getForm().isEmpty()) {
+            var form = new FormData();
+            def.getForm().forEach(form::set);
+            req.setBody(form);
+        }
+        final var finalUrl = url.toString();
+        DomGlobal.fetch(finalUrl, req).then((Response response) -> {
             var contentType = response.headers.get(HttpHeaders.CONTENT_TYPE);
-            var mimeType = SupportedMimeType.byMimeTypeOrUrl(contentType, def.getUrl())
-                    .orElse(DEFAULT_TYPE);
+            var mimeType = SupportedMimeType.byMimeTypeOrUrl(contentType, finalUrl).orElse(DEFAULT_TYPE);
             return response.text().then(responseText -> {
-                if (response.status == HttpResponseCodes.SC_OK) {
+                if (response.status == OK_RESPONSE_CODE) {
                     return register(def, callback, responseText, mimeType);
                 } else {
                     var exception = buildExceptionForResponse(responseText, response);
@@ -192,8 +209,14 @@ public class ExternalDataSetClientProvider {
         DataSet dataSet = null;
         var content = contentType.tranformer.apply(responseText);
 
-        if (def.getType() != null && isBlank(def.getExpression())) {
-            def.setExpression(def.getType().getExpression());
+        if (def.getType() != null) {
+            var type = def.getType();
+            try {
+                content = applyExpression(type.getExpression(), content);
+            } catch (Exception e) {
+                callback.onError(new ClientRuntimeError("Error evaluating type \"" + type + "\" expression", e));
+                return null;
+            }
         }
 
         if (!isBlank(def.getExpression())) {
