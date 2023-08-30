@@ -51,14 +51,12 @@ public class RuntimeEntryPoint {
     @PostConstruct
     public void onLoad() {
         var root = DomGlobal.document.getElementById("app");
-
         RootPanel.get().getElement().appendChild(Js.cast(root));
 
+        root.appendChild(busyIndicator.getElement());
         hideLoading();
         placeManager.setup(root);
         router.doRoute();
-
-        DomGlobal.document.body.appendChild(busyIndicator.getElement());
 
     }
 
